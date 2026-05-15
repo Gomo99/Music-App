@@ -422,9 +422,11 @@ namespace MP3_Player
         private SlimBar sbProgress, sbVolume;
         private GlowCircle btnPlay;
         private FlatIcon btnPrev, btnNext, btnStop, btnShuffle, btnRepeat, btnMini, btnTheme;
-        private TextPill btnAddLib, btnRemoveLib, btnPlayNow, btnEnqueue, btnDequeue, btnClearQueue;
+        private TextPill btnAddLib, btnRemoveLib, btnPlayNow, btnEnqueue, btnDequeue, btnClearQueue, btnSavePlaylist, btnLoadPlaylist;
         private Panel panMain, panLeft, panDisc, panOsc, accentLine;
         private Label lblTitle, lblArtist, lblAlbum, lblTime, lblStatus;
+
+        private const double SEEK_STEP_SECONDS = 5.0;
 
         public Form1()
         {
@@ -448,6 +450,61 @@ namespace MP3_Player
             UpdateAllThemeDependentUI();
         }
 
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Space)
+            {
+                if (waveOut != null)
+                    PauseResume();
+                else if (queue.Count > 0)
+                {
+                    int idx = queueListBox.SelectedIndex < 0 ? 0 : queueListBox.SelectedIndex;
+                    PlayTrack(idx);
+                }
+                return true;
+            }
+
+            if (keyData == Keys.Left || keyData == Keys.Right)
+            {
+                SeekByKeyboard(keyData == Keys.Right);
+                return true;
+            }
+
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            const int WM_APPCOMMAND = 0x0319;
+            if (m.Msg == WM_APPCOMMAND)
+            {
+                int cmd = (int)(m.LParam.ToInt64() >> 16) & ~0xf000;
+                switch (cmd)
+                {
+                    case 14: // Play/Pause
+                        if (waveOut != null) PauseResume();
+                        else if (queue.Count > 0) PlayTrack(queueListBox.SelectedIndex < 0 ? 0 : queueListBox.SelectedIndex);
+                        break;
+                    case 13: Stop(); break;
+                    case 11: Next(); break;
+                    case 12: Previous(); break;
+                }
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
+        private void SeekByKeyboard(bool forward)
+        {
+            var reader = crossFader?.CurrentReader;
+            if (reader == null) return;
+            double newSeconds = reader.CurrentTime.TotalSeconds + (forward ? SEEK_STEP_SECONDS : -SEEK_STEP_SECONDS);
+            newSeconds = Math.Max(0, Math.Min(reader.TotalTime.TotalSeconds, newSeconds));
+            reader.CurrentTime = TimeSpan.FromSeconds(newSeconds);
+            sbProgress.Value = (int)newSeconds;
+            lblTime.Text = Fmt(reader.CurrentTime) + " / " + Fmt(reader.TotalTime);
+        }
+
         private void Build()
         {
             // ── SIDEBAR ──────────────────────────────────────────────────
@@ -465,29 +522,24 @@ namespace MP3_Player
                     g.DrawLine(p, 0, 61, hdr.Width, 61);
             };
 
-            // Split container for Library and Queue
             var split = new SplitContainer
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Vertical,
-                Panel1MinSize = 80,               // library can shrink
-                Panel2MinSize = 80,               // queue can shrink
-                SplitterDistance = 180,           // give library a bit more room initially
+                Panel1MinSize = 80,
+                Panel2MinSize = 80,
+                SplitterDistance = 180,
                 BackColor = DS.Surface1,
                 BorderStyle = BorderStyle.None,
             };
             split.Panel1.BackColor = DS.Surface1;
             split.Panel2.BackColor = DS.Surface1;
             split.SplitterWidth = 3;
-            // workaround to color the splitter:
             split.Paint += (s, e) =>
             {
                 var g = e.Graphics;
                 using (var b = new SolidBrush(DS.Border))
-                {
-                    // Draw the splitter as a vertical bar
                     g.FillRectangle(b, split.SplitterDistance, 0, split.SplitterWidth, split.Height);
-                }
             };
 
             // ---------- LIBRARY PANEL ----------
@@ -499,12 +551,11 @@ namespace MP3_Player
                 int sel = libListBox.SelectedIndex;
                 if (sel >= 0)
                 {
-                    // Replace queue with this track and play it
                     queue.Clear();
                     queue.Add(library[sel]);
                     UpdateQueueDisplay();
                     currentTrackIndex = 0;
-                    if (shuffleEnabled) ToggleShuffle(false); // turn off shuffle when manually selecting
+                    if (shuffleEnabled) ToggleShuffle(false);
                     StopPlayback();
                     PlayTrack(0);
                 }
@@ -535,14 +586,11 @@ namespace MP3_Player
             var panQueueFooter = new Panel { Dock = DockStyle.Bottom, Height = 56, BackColor = DS.Surface1, Padding = new Padding(4) };
             panQueueFooter.Paint += (s, e) => { using (var p = new Pen(DS.Border)) e.Graphics.DrawLine(p, 0, 0, panQueueFooter.Width, 0); };
 
-            btnPlayNow = new TextPill { Text = "▶ PLAY", Location = new Point(4, 4), Size = new Size(80, 22), Accent = DS.Accent, Font = new Font("Segoe UI", 7.5f) };
-            btnPlayNow.Click += (s, e) =>
-            {
-                int sel = queueListBox.SelectedIndex;
-                if (sel >= 0) PlayTrack(sel);
-            };
+            // Row 1
+            btnPlayNow = new TextPill { Text = "▶ PLAY", Location = new Point(4, 4), Size = new Size(60, 22), Accent = DS.Accent, Font = new Font("Segoe UI", 7.5f) };
+            btnPlayNow.Click += (s, e) => { int sel = queueListBox.SelectedIndex; if (sel >= 0) PlayTrack(sel); };
 
-            btnEnqueue = new TextPill { Text = "＋ ENQ", Location = new Point(90, 4), Size = new Size(76, 22), Accent = DS.Accent, Font = new Font("Segoe UI", 7.5f) };
+            btnEnqueue = new TextPill { Text = "＋ ENQ", Location = new Point(68, 4), Size = new Size(60, 22), Accent = DS.Accent, Font = new Font("Segoe UI", 7.5f) };
             btnEnqueue.Click += (s, e) =>
             {
                 int libSel = libListBox.SelectedIndex;
@@ -557,7 +605,7 @@ namespace MP3_Player
                 }
             };
 
-            btnDequeue = new TextPill { Text = "✕ DEQ", Location = new Point(172, 4), Size = new Size(76, 22), Accent = DS.Danger, Font = new Font("Segoe UI", 7.5f) };
+            btnDequeue = new TextPill { Text = "✕ DEQ", Location = new Point(132, 4), Size = new Size(60, 22), Accent = DS.Danger, Font = new Font("Segoe UI", 7.5f) };
             btnDequeue.Click += (s, e) =>
             {
                 int qSel = queueListBox.SelectedIndex;
@@ -573,22 +621,24 @@ namespace MP3_Player
                 }
             };
 
-            btnClearQueue = new TextPill { Text = "🗑 CLR", Location = new Point(4, 30), Size = new Size(244, 22), Accent = DS.Danger, Font = new Font("Segoe UI", 7.5f) };
-            btnClearQueue.Click += (s, e) =>
-            {
-                Stop();
-                queue.Clear();
-                UpdateQueueDisplay();
-            };
+            // Row 2
+            btnClearQueue = new TextPill { Text = "🗑 CLR", Location = new Point(4, 30), Size = new Size(60, 22), Accent = DS.Danger, Font = new Font("Segoe UI", 7.5f) };
+            btnClearQueue.Click += (s, e) => { Stop(); queue.Clear(); UpdateQueueDisplay(); };
 
-            panQueueFooter.Controls.AddRange(new Control[] { btnPlayNow, btnEnqueue, btnDequeue, btnClearQueue });
+            btnSavePlaylist = new TextPill { Text = "💾 SAVE", Location = new Point(68, 30), Size = new Size(60, 22), Accent = DS.Accent, Font = new Font("Segoe UI", 7.5f) };
+            btnSavePlaylist.Click += BtnSavePlaylist_Click;
+
+            btnLoadPlaylist = new TextPill { Text = "📂 LOAD", Location = new Point(132, 30), Size = new Size(60, 22), Accent = DS.Accent, Font = new Font("Segoe UI", 7.5f) };
+            btnLoadPlaylist.Click += BtnLoadPlaylist_Click;
+
+            panQueueFooter.Controls.AddRange(new Control[] { btnPlayNow, btnEnqueue, btnDequeue, btnClearQueue, btnSavePlaylist, btnLoadPlaylist });
 
             panQueue.Controls.Add(queueListBox);
             panQueue.Controls.Add(lblQueue);
             panQueue.Controls.Add(panQueueFooter);
 
             panLeft.Controls.Add(split);
-            panLeft.Controls.Add(hdr); // header on top, split fills the rest
+            panLeft.Controls.Add(hdr);
 
             var div = new Panel { Dock = DockStyle.Left, Width = 1, BackColor = DS.Border };
             panMain = new Panel { Dock = DockStyle.Fill, BackColor = DS.BG };
@@ -646,7 +696,7 @@ namespace MP3_Player
             Controls.Add(div);
             Controls.Add(panLeft);
 
-            UpdateQueueDisplay(); // initial state
+            UpdateQueueDisplay();
         }
 
         private static Label MkLbl(string text, int x, int y, int w, int h, Color fg, Font f)
@@ -674,6 +724,79 @@ namespace MP3_Player
             queueListBox.EndUpdate();
             queueListBox.CurrentIndex = currentTrackIndex;
             queueListBox.Invalidate();
+        }
+
+        // ── PLAYLIST SAVE / LOAD ──────────────
+        private void BtnSavePlaylist_Click(object sender, EventArgs e)
+        {
+            if (queue.Count == 0)
+            {
+                MessageBox.Show("The queue is empty. Nothing to save.", "TAPE", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            using (var sfd = new SaveFileDialog
+            {
+                Filter = "Playlist Files (*.txt)|*.txt|All Files|*.*",
+                DefaultExt = "txt",
+                FileName = "playlist.txt"
+            })
+            {
+                if (sfd.ShowDialog() == DialogResult.OK)
+                {
+                    try
+                    {
+                        File.WriteAllLines(sfd.FileName, queue);
+                        MessageBox.Show($"Playlist saved to:\n{sfd.FileName}", "TAPE", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Error saving playlist:\n{ex.Message}", "TAPE", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+            }
+        }
+
+        private void BtnLoadPlaylist_Click(object sender, EventArgs e)
+        {
+            using (var ofd = new OpenFileDialog
+            {
+                Filter = "Playlist Files (*.txt)|*.txt|All Files|*.*",
+                Multiselect = false
+            })
+            {
+                if (ofd.ShowDialog() == DialogResult.OK)
+                {
+                    try
+                    {
+                        var lines = File.ReadAllLines(ofd.FileName);
+                        var newTracks = lines.Where(l => !string.IsNullOrWhiteSpace(l) && File.Exists(l)).ToList();
+                        if (newTracks.Count == 0)
+                        {
+                            MessageBox.Show("No valid audio files found in the playlist.", "TAPE", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            return;
+                        }
+                        // Replace the current queue
+                        Stop();
+                        queue.Clear();
+                        foreach (var f in newTracks)
+                        {
+                            queue.Add(f);
+                            // Optionally add to library if not already present
+                            if (!library.Contains(f))
+                            {
+                                library.Add(f);
+                                libListBox.Items.Add(Path.GetFileName(f));
+                            }
+                        }
+                        UpdateQueueDisplay();
+                        MessageBox.Show($"{newTracks.Count} tracks loaded into the queue.", "TAPE", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Error loading playlist:\n{ex.Message}", "TAPE", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+            }
         }
 
         // ── THEME ───────────────────────────────
@@ -1015,7 +1138,6 @@ namespace MP3_Player
             int sel = libListBox.SelectedIndex;
             if (sel < 0) return;
             string file = library[sel];
-            // Remove from queue if present
             if (queue.Contains(file))
             {
                 int qIdx = queue.IndexOf(file);
@@ -1030,7 +1152,6 @@ namespace MP3_Player
             libListBox.Invalidate();
         }
 
-        // ── PLAY BUTTON ──────────────────────────
         private void BtnPlay_Click(object sender, EventArgs e)
         {
             if (waveOut != null) { PauseResume(); return; }
@@ -1188,7 +1309,7 @@ namespace MP3_Player
     }
 
     // ════════════════════════════════════════════════════════════════════
-    //  CUSTOM CONTROLS  (unchanged – now used by both library and queue)
+    //  CUSTOM CONTROLS  (unchanged)
     // ════════════════════════════════════════════════════════════════════
     internal class TapeListBox : ListBox
     {
